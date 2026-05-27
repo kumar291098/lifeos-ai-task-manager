@@ -2,11 +2,13 @@ package com.lifeos.taskmanager.task;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 public record TaskResponse(
         Long id,
         String title,
         String notes,
+        List<TaskLinkResponse> links,
         int importance,
         LocalDate deadline,
         LocalDateTime reminderAt,
@@ -24,6 +26,7 @@ public record TaskResponse(
                 task.getId(),
                 task.getTitle(),
                 task.getNotes(),
+                task.getLinks().stream().map(TaskLinkResponse::from).toList(),
                 task.getImportance(),
                 task.getDeadline(),
                 task.getReminderAt(),

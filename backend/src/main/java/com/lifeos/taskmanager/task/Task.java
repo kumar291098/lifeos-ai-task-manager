@@ -1,11 +1,16 @@
 package com.lifeos.taskmanager.task;
 
+import jakarta.persistence.CollectionTable;
+import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.OrderColumn;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -13,6 +18,8 @@ import jakarta.validation.constraints.NotNull;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 @Entity
 public class Task {
@@ -24,6 +31,12 @@ public class Task {
     private String title;
 
     private String notes;
+
+    @Valid
+    @ElementCollection
+    @CollectionTable(name = "task_links", joinColumns = @JoinColumn(name = "task_id"))
+    @OrderColumn(name = "link_order")
+    private List<TaskLink> links = new ArrayList<>();
 
     @Min(1)
     @Max(5)
@@ -48,10 +61,11 @@ public class Task {
     protected Task() {
     }
 
-    public Task(String title, String notes, int importance, LocalDate deadline, LocalDateTime reminderAt,
-                Recurrence recurrence, int estimatedMinutes, int manualOrder) {
+    public Task(String title, String notes, List<TaskLink> links, int importance, LocalDate deadline,
+                LocalDateTime reminderAt, Recurrence recurrence, int estimatedMinutes, int manualOrder) {
         this.title = title;
         this.notes = notes;
+        this.links = new ArrayList<>(links == null ? List.of() : links);
         this.importance = importance;
         this.deadline = deadline;
         this.reminderAt = reminderAt;
@@ -70,6 +84,10 @@ public class Task {
 
     public String getNotes() {
         return notes;
+    }
+
+    public List<TaskLink> getLinks() {
+        return List.copyOf(links);
     }
 
     public int getImportance() {
@@ -111,6 +129,8 @@ public class Task {
     public void updateFrom(TaskRequest request) {
         title = request.title();
         notes = request.notes();
+        links.clear();
+        links.addAll(request.toLinks());
         importance = request.importance();
         deadline = request.deadline();
         reminderAt = request.reminderAt();
@@ -122,6 +142,11 @@ public class Task {
     public void complete() {
         completed = true;
         completedAt = LocalDateTime.now();
+    }
+
+    public void setCompletedForSeed(boolean completed, LocalDateTime completedAt) {
+        this.completed = completed;
+        this.completedAt = completedAt;
     }
 
     public Task nextOccurrence(int order) {
@@ -137,7 +162,7 @@ public class Task {
             case MONTHLY -> reminderAt.plusMonths(1);
             case NONE -> reminderAt;
         };
-        return new Task(title, notes, importance, nextDeadline, nextReminder, recurrence, estimatedMinutes, order);
+        return new Task(title, notes, links, importance, nextDeadline, nextReminder, recurrence, estimatedMinutes, order);
     }
 
     public void acknowledgeReminder() {

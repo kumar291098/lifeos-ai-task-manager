@@ -19,6 +19,7 @@ public class TaskService {
         this.priorityEngine = priorityEngine;
     }
 
+    @Transactional(readOnly = true)
     public DashboardResponse dashboard() {
         List<TaskResponse> tasks = findAll();
         TaskResponse recommendation = tasks.stream()
@@ -28,6 +29,7 @@ public class TaskService {
         return new DashboardResponse(tasks, recommendation, dailyPlan(), analytics(), alerts());
     }
 
+    @Transactional(readOnly = true)
     public List<TaskResponse> findAll() {
         return repository.findAllByOrderByCompletedAscManualOrderAscDeadlineAsc()
                 .stream()
@@ -38,7 +40,7 @@ public class TaskService {
     @Transactional
     public TaskResponse create(TaskRequest request) {
         int order = repository.findAll().stream().mapToInt(Task::getManualOrder).max().orElse(0) + 1;
-        Task task = new Task(request.title(), request.notes(), request.importance(), request.deadline(),
+        Task task = new Task(request.title(), request.notes(), request.toLinks(), request.importance(), request.deadline(),
                 request.reminderAt(), request.recurrence(), request.estimatedMinutes(), order);
         return TaskResponse.from(repository.save(task), priorityEngine);
     }
@@ -54,10 +56,6 @@ public class TaskService {
     public TaskResponse complete(Long id) {
         Task task = get(id);
         task.complete();
-        if (task.getRecurrence() != Recurrence.NONE) {
-            int order = repository.findAll().stream().mapToInt(Task::getManualOrder).max().orElse(0) + 1;
-            repository.save(task.nextOccurrence(order));
-        }
         return TaskResponse.from(task, priorityEngine);
     }
 
@@ -87,6 +85,7 @@ public class TaskService {
         return TaskResponse.from(task, priorityEngine);
     }
 
+    @Transactional(readOnly = true)
     public List<PlannerItem> dailyPlan() {
         LocalTime cursor = LocalTime.of(9, 0);
         List<TaskResponse> plannedTasks = repository.findAllByOrderByCompletedAscManualOrderAscDeadlineAsc().stream()
@@ -105,6 +104,7 @@ public class TaskService {
         return plan;
     }
 
+    @Transactional(readOnly = true)
     public AnalyticsResponse analytics() {
         List<Task> tasks = repository.findAll();
         long total = tasks.size();
@@ -126,6 +126,7 @@ public class TaskService {
         return new AnalyticsResponse(total, open, completed, overdue, completionRate, remainingMinutes, bestNext);
     }
 
+    @Transactional(readOnly = true)
     public List<TaskResponse> alerts() {
         return repository.findAll().stream()
                 .filter(task -> priorityEngine.alertLevel(task) != AlertLevel.NONE)

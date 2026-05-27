@@ -1,164 +1,134 @@
-import { useEffect, useMemo, useState } from 'react'
-import type { FormEvent } from 'react'
+import { Alert, Button, Card, ConfigProvider, Space, Typography, theme as antTheme } from 'antd'
+import { useEffect, useState } from 'react'
+import { AlertCircle, Sparkles } from 'lucide-react'
+import confetti from 'canvas-confetti'
 import './App.css'
+import { taskApi } from './api/tasks'
+import { MetricCard } from './components/MetricCard'
+import { ThemeToggle } from './components/ThemeToggle'
+import { AnalyticsPanel } from './features/dashboard/AnalyticsPanel'
+import { PlannerPanel } from './features/dashboard/PlannerPanel'
+import { RecommendationPanel } from './features/dashboard/RecommendationPanel'
+import { CompletedTasks } from './features/tasks/CompletedTasks'
+import { TaskFormPanel } from './features/tasks/TaskFormPanel'
+import { TaskList } from './features/tasks/TaskList'
+import { useDashboard } from './hooks/useDashboard'
+import { emptyForm, toForm } from './lib/forms'
+import { THEME_KEY, getInitialTheme, type ThemeMode } from './lib/theme'
+import type { Task, TaskForm } from './types/task'
 
-type Recurrence = 'NONE' | 'DAILY' | 'WEEKLY' | 'MONTHLY'
-type AlertLevel = 'NONE' | 'REMINDER' | 'DUE_TODAY' | 'OVERDUE'
-
-type Task = {
-  id: number
-  title: string
-  notes: string | null
-  importance: number
-  deadline: string
-  reminderAt: string | null
-  recurrence: Recurrence
-  estimatedMinutes: number
-  completed: boolean
-  completedAt: string | null
-  manualOrder: number
-  aiScore: number
-  aiReason: string
-  alertLevel: AlertLevel
-}
-
-type PlannerItem = {
-  startTime: string
-  endTime: string
-  task: Task
-}
-
-type Analytics = {
-  totalTasks: number
-  openTasks: number
-  completedTasks: number
-  overdueTasks: number
-  completionRate: number
-  remainingFocusMinutes: number
-  bestNextAction: string
-}
-
-type Dashboard = {
-  tasks: Task[]
-  recommendation: Task | null
-  dailyPlan: PlannerItem[]
-  analytics: Analytics
-  alerts: Task[]
-}
-
-type TaskForm = {
-  title: string
-  notes: string
-  importance: number
-  deadline: string
-  reminderAt: string
-  recurrence: Recurrence
-  estimatedMinutes: number
-}
-
-const API = import.meta.env.VITE_API_URL ?? 'http://localhost:8081/api'
-const THEME_KEY = 'lifeos-theme'
-type Theme = 'light' | 'dark'
-
-const emptyForm = (): TaskForm => ({
-  title: '',
-  notes: '',
-  importance: 3,
-  deadline: new Date(Date.now() + 86400000).toISOString().slice(0, 10),
-  reminderAt: '',
-  recurrence: 'NONE',
-  estimatedMinutes: 45,
-})
-
-function toForm(task: Task): TaskForm {
-  return {
-    title: task.title,
-    notes: task.notes ?? '',
-    importance: task.importance,
-    deadline: task.deadline,
-    reminderAt: task.reminderAt ? task.reminderAt.slice(0, 16) : '',
-    recurrence: task.recurrence,
-    estimatedMinutes: task.estimatedMinutes,
-  }
-}
-
-function toPayload(form: TaskForm) {
-  return {
-    ...form,
-    notes: form.notes.trim(),
-    reminderAt: form.reminderAt ? form.reminderAt : null,
-  }
-}
+// New imports for premium features
+import { useGamification } from './hooks/useGamification'
+import { BadgesPanel } from './components/BadgesPanel'
+import { ZenFocusRoom } from './components/ZenFocusRoom'
+import { CommandPalette } from './components/CommandPalette'
 
 export default function App() {
-  const [dashboard, setDashboard] = useState<Dashboard | null>(null)
+  const { dashboard, openTasks, completedTasks, loading, error, setError, refresh } = useDashboard()
   const [form, setForm] = useState<TaskForm>(emptyForm)
   const [editingId, setEditingId] = useState<number | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [draggedId, setDraggedId] = useState<number | null>(null)
-  const [theme, setTheme] = useState<Theme>(() => {
-    const saved = localStorage.getItem(THEME_KEY)
-    if (saved === 'light' || saved === 'dark') {
-      return saved
-    }
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-  })
+  const [theme, setTheme] = useState<ThemeMode>(getInitialTheme)
 
-  const openTasks = useMemo(() => dashboard?.tasks.filter((task) => !task.completed) ?? [], [dashboard])
-  const completedTasks = useMemo(() => dashboard?.tasks.filter((task) => task.completed) ?? [], [dashboard])
+  // Gamification state
+  const { xp, level, streak, badges, recordTaskCompletion } = useGamification()
 
-  async function loadDashboard() {
-    setError(null)
-    const response = await fetch(`${API}/dashboard`)
-    if (!response.ok) {
-      throw new Error('Backend is not responding yet')
-    }
-    setDashboard(await response.json())
-    setLoading(false)
-  }
-
-  useEffect(() => {
-    loadDashboard().catch((err: Error) => {
-      setError(err.message)
-      setLoading(false)
-    })
-  }, [])
+  // Zen Mode & Command Palette state
+  const [zenTask, setZenTask] = useState<Task | null>(null)
+  const [cmdPaletteVisible, setCmdPaletteVisible] = useState<boolean>(false)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     localStorage.setItem(THEME_KEY, theme)
   }, [theme])
 
-  async function saveTask(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const response = await fetch(editingId ? `${API}/tasks/${editingId}` : `${API}/tasks`, {
-      method: editingId ? 'PUT' : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(toPayload(form)),
-    })
-    if (!response.ok) {
-      setError('Could not save task. Check required fields.')
-      return
+  // Register global Cmd+K shortcut
+  useEffect(() => {
+    const handleGlobalKeys = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setCmdPaletteVisible((prev) => !prev)
+      }
     }
-    setForm(emptyForm())
-    setEditingId(null)
-    await loadDashboard()
+    window.addEventListener('keydown', handleGlobalKeys)
+    return () => window.removeEventListener('keydown', handleGlobalKeys)
+  }, [])
+
+  async function runAction(action: () => Promise<void>, failure: string) {
+    try {
+      setError(null)
+      await action()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : failure)
+    }
   }
 
-  async function completeTask(id: number) {
-    await fetch(`${API}/tasks/${id}/complete`, { method: 'PATCH' })
-    await loadDashboard()
+  async function saveTask() {
+    await runAction(async () => {
+      if (editingId) {
+        await taskApi.update(editingId, form)
+      } else {
+        await taskApi.create(form)
+      }
+      setNotice(editingId ? 'Task updated.' : 'Task added to your active list.')
+      setEditingId(null)
+      setForm(emptyForm())
+      await refresh()
+    }, 'Could not save task. Check required fields.')
+  }
+
+  async function completeTask(task: Task) {
+    await runAction(async () => {
+      await taskApi.complete(task.id)
+      
+      // Calculate and trigger gamification awards
+      const result = recordTaskCompletion(
+        task.estimatedMinutes,
+        task.importance,
+        (newLvl) => {
+          // Level Up callback
+          setNotice(`🎉 LEVEL UP! You reached Level ${newLvl}! Keep crushing it!`)
+          // Large level up confetti blast
+          confetti({
+            particleCount: 160,
+            spread: 80,
+            origin: { y: 0.55 }
+          })
+        },
+        (badgeName) => {
+          // Achievement unlocked callback
+          setNotice(`🏆 ACHIEVEMENT UNLOCKED: "${badgeName}"! Check your collection below!`)
+        }
+      )
+
+      // Play normal completion confetti if it wasn't a level up
+      if (!result.leveledUp) {
+        setNotice(`"${task.title}" completed. +${result.earnedXp} XP earned!`)
+        confetti({
+          particleCount: 80,
+          spread: 60,
+          origin: { y: 0.7 }
+        })
+      }
+
+      await refresh()
+    }, 'Could not complete this task. Please try again.')
   }
 
   async function deleteTask(id: number) {
-    await fetch(`${API}/tasks/${id}`, { method: 'DELETE' })
-    await loadDashboard()
+    await runAction(async () => {
+      await taskApi.delete(id)
+      setNotice('Task deleted.')
+      await refresh()
+    }, 'Could not delete this task.')
   }
 
   async function acknowledge(id: number) {
-    await fetch(`${API}/tasks/${id}/acknowledge-reminder`, { method: 'PATCH' })
-    await loadDashboard()
+    await runAction(async () => {
+      await taskApi.acknowledge(id)
+      await refresh()
+    }, 'Could not acknowledge this reminder.')
   }
 
   async function reorder(dropId: number) {
@@ -170,199 +140,152 @@ export default function App() {
     const to = ids.indexOf(dropId)
     ids.splice(to, 0, ids.splice(from, 1)[0])
     setDraggedId(null)
-    await fetch(`${API}/tasks/reorder`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orderedIds: ids }),
-    })
-    await loadDashboard()
+    await runAction(async () => {
+      await taskApi.reorder(ids)
+      await refresh()
+    }, 'Could not reorder tasks.')
   }
 
   function edit(task: Task) {
     setEditingId(task.id)
     setForm(toForm(task))
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  if (loading) {
-    return <main className="app-shell status-screen">Loading smart workspace...</main>
+  function cancelEdit() {
+    setEditingId(null)
+    setForm(emptyForm())
   }
+
+  const analytics = dashboard?.analytics
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">LifeOS</p>
-          <h1>Smart Task Manager</h1>
-        </div>
-        <div className="topbar-actions">
-          <button
-            className="theme-toggle"
-            type="button"
-            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            aria-pressed={theme === 'dark'}
-          >
-            {theme === 'dark' ? 'Light mode' : 'Dark mode'}
-          </button>
-          <div className="score-card">
-            <span>{dashboard?.analytics.completionRate ?? 0}%</span>
-            <small>completion</small>
+    <ConfigProvider
+      theme={{
+        algorithm: theme === 'dark' ? antTheme.darkAlgorithm : antTheme.defaultAlgorithm,
+        token: {
+          colorPrimary: theme === 'dark' ? '#38bdf8' : '#0284c7',
+          borderRadius: 12,
+          fontFamily: "'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        },
+      }}
+    >
+      <main className="app-shell">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">LifeOS</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+              <h1>Smart Task Manager</h1>
+              {streak > 0 && (
+                <div className="streak-widget" title={`${streak} Consecutive Active Days!`}>
+                  🔥 {streak} day streak
+                </div>
+              )}
+            </div>
+            <Typography.Text type="secondary">
+              Plan priorities, save useful links, and press <kbd style={{ background: 'var(--surface-soft)', padding: '2px 6px', border: '1px solid var(--border)', borderRadius: 4, fontSize: '0.8rem', fontWeight: 'bold' }}>Ctrl + K</kbd> for shortcuts.
+            </Typography.Text>
           </div>
-        </div>
-      </header>
+          <Space className="topbar-actions" align="center" wrap>
+            {/* Gamified level bar */}
+            <div className="xp-header" title={`XP: ${xp}/100 to next level`}>
+              <span>LVL {level}</span>
+              <div className="xp-bar-container">
+                <div className="xp-bar-fill" style={{ width: `${xp}%` }} />
+              </div>
+              <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>{xp}%</span>
+            </div>
 
-      {error && <div className="error">{error}</div>}
+            <ThemeToggle theme={theme} onToggle={() => setTheme(theme === 'dark' ? 'light' : 'dark')} />
+            <Card className="score-card" size="small" style={{ minWidth: 100, padding: '4px 10px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <strong style={{ fontSize: '1.4rem', display: 'block', fontWeight: 800 }}>{analytics?.completionRate ?? 0}%</strong>
+              <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>completion</span>
+            </Card>
+          </Space>
+        </header>
 
-      <section className="recommendation">
-        <div>
-          <p className="eyebrow">AI recommendation</p>
-          <h2>
-            {dashboard?.recommendation
-              ? `Complete "${dashboard.recommendation.title}" first`
-              : 'All tasks are complete'}
-          </h2>
-          <p>
-            {dashboard?.recommendation
-              ? `Because ${dashboard.recommendation.aiReason}.`
-              : 'Your board is clear. Add a task when the next priority appears.'}
-          </p>
-        </div>
-        {dashboard?.recommendation && (
-          <div className="priority-meter">
-            <span>{dashboard.recommendation.aiScore}</span>
-            <small>AI priority</small>
-          </div>
+        {error && (
+          <Alert type="error" showIcon icon={<AlertCircle size={18} />} message={error} className="app-alert" />
         )}
-      </section>
+        {notice && (
+          <Alert type="success" showIcon icon={<Sparkles size={18} />} message={notice} closable onClose={() => setNotice(null)} className="app-alert" />
+        )}
 
-      <div className="workspace">
-        <section className="panel task-panel">
-          <div className="panel-heading">
-            <h2>Tasks</h2>
-            <span>{openTasks.length} open</span>
-          </div>
-          <div className="task-list">
-            {openTasks.map((task) => (
-              <article
-                className={`task-row alert-${task.alertLevel.toLowerCase()}`}
-                key={task.id}
-                draggable
-                onDragStart={() => setDraggedId(task.id)}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={() => reorder(task.id)}
-              >
-                <div className="drag-handle">::</div>
-                <div className="task-main">
-                  <div className="task-title-line">
-                    <h3>{task.title}</h3>
-                    <span className="pill">{task.aiScore}</span>
-                  </div>
-                  <p>{task.aiReason}</p>
-                  <div className="meta-line">
-                    <span>Due {task.deadline}</span>
-                    <span>Importance {task.importance}/5</span>
-                    <span>{task.estimatedMinutes} min</span>
-                    <span>{task.recurrence.toLowerCase()}</span>
-                  </div>
-                </div>
-                <div className="row-actions">
-                  {task.alertLevel === 'REMINDER' && <button onClick={() => acknowledge(task.id)}>Ack</button>}
-                  <button onClick={() => edit(task)}>Edit</button>
-                  <button onClick={() => completeTask(task.id)}>Done</button>
-                  <button className="ghost" onClick={() => deleteTask(task.id)}>Delete</button>
-                </div>
-              </article>
-            ))}
-          </div>
+        {loading || !dashboard || !analytics ? (
+          <div className="status-screen">Loading smart workspace...</div>
+        ) : (
+          <>
+            <RecommendationPanel task={dashboard.recommendation} />
 
-          {completedTasks.length > 0 && (
-            <details className="completed">
-              <summary>{completedTasks.length} completed</summary>
-              {completedTasks.map((task) => <p key={task.id}>{task.title}</p>)}
-            </details>
-          )}
-        </section>
+            <section className="quick-stats">
+              <MetricCard label="Active tasks" value={analytics.openTasks} />
+              <MetricCard label="Completed" value={analytics.completedTasks} />
+              <MetricCard label="Overdue" value={analytics.overdueTasks} />
+              <MetricCard label="Focus minutes" value={analytics.remainingFocusMinutes} />
+            </section>
 
-        <aside className="side-stack">
-          <form className="panel form-panel" onSubmit={saveTask}>
-            <div className="panel-heading">
-              <h2>{editingId ? 'Edit Task' : 'New Task'}</h2>
-              {editingId && <button type="button" onClick={() => { setEditingId(null); setForm(emptyForm()) }}>Clear</button>}
-            </div>
-            <label>
-              Task
-              <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} required />
-            </label>
-            <label>
-              Notes
-              <textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} />
-            </label>
-            <div className="form-grid">
-              <label>
-                Importance
-                <input type="number" min="1" max="5" value={form.importance} onChange={(event) => setForm({ ...form, importance: Number(event.target.value) })} />
-              </label>
-              <label>
-                Minutes
-                <input type="number" min="5" step="5" value={form.estimatedMinutes} onChange={(event) => setForm({ ...form, estimatedMinutes: Number(event.target.value) })} />
-              </label>
-            </div>
-            <label>
-              Deadline
-              <input type="date" value={form.deadline} onChange={(event) => setForm({ ...form, deadline: event.target.value })} required />
-            </label>
-            <label>
-              Reminder
-              <input type="datetime-local" value={form.reminderAt} onChange={(event) => setForm({ ...form, reminderAt: event.target.value })} />
-            </label>
-            <label>
-              Recurring
-              <select value={form.recurrence} onChange={(event) => setForm({ ...form, recurrence: event.target.value as Recurrence })}>
-                <option value="NONE">None</option>
-                <option value="DAILY">Daily</option>
-                <option value="WEEKLY">Weekly</option>
-                <option value="MONTHLY">Monthly</option>
-              </select>
-            </label>
-            <button className="primary" type="submit">{editingId ? 'Save Changes' : 'Add Task'}</button>
-          </form>
+            <div className="workspace">
+              <div className="main-stack">
+                <TaskList
+                  tasks={openTasks}
+                  draggedId={draggedId}
+                  onDragStart={setDraggedId}
+                  onDrop={(id) => void reorder(id)}
+                  onEdit={edit}
+                  onComplete={(task) => void completeTask(task)}
+                  onDelete={(id) => void deleteTask(id)}
+                  onAcknowledge={(id) => void acknowledge(id)}
+                  onLaunchZen={(task) => setZenTask(task)}
+                />
+                <CompletedTasks tasks={completedTasks} />
+              </div>
 
-          <section className="panel">
-            <div className="panel-heading">
-              <h2>Daily Planner</h2>
-              <span>9:00 start</span>
+              <aside className="side-stack">
+                <TaskFormPanel
+                  form={form}
+                  editing={editingId !== null}
+                  onChange={setForm}
+                  onCancelEdit={cancelEdit}
+                  onSubmit={() => void saveTask()}
+                />
+                <PlannerPanel items={dashboard.dailyPlan} />
+                <AnalyticsPanel
+                  analytics={analytics}
+                  completedTasks={completedTasks}
+                  activeTasks={openTasks}
+                />
+                <BadgesPanel unlockedBadgeIds={badges} />
+                <Button onClick={() => void refresh()}>Refresh dashboard</Button>
+              </aside>
             </div>
-            <div className="timeline">
-              {dashboard?.dailyPlan.map((item) => (
-                <div className="timeline-item" key={`${item.startTime}-${item.task.id}`}>
-                  <time>{item.startTime.slice(0, 5)} - {item.endTime.slice(0, 5)}</time>
-                  <strong>{item.task.title}</strong>
-                </div>
-              ))}
-            </div>
-          </section>
+          </>
+        )}
 
-          <section className="panel analytics">
-            <div className="panel-heading">
-              <h2>Analytics</h2>
-            </div>
-            <div className="metric-grid">
-              <Metric label="Open" value={dashboard?.analytics.openTasks ?? 0} />
-              <Metric label="Overdue" value={dashboard?.analytics.overdueTasks ?? 0} />
-              <Metric label="Focus min" value={dashboard?.analytics.remainingFocusMinutes ?? 0} />
-              <Metric label="Done" value={dashboard?.analytics.completedTasks ?? 0} />
-            </div>
-          </section>
-        </aside>
-      </div>
-    </main>
-  )
-}
+        {/* Full Screen Zen Timer overlay */}
+        {zenTask && (
+          <ZenFocusRoom
+            task={zenTask}
+            onClose={() => setZenTask(null)}
+            onComplete={() => {
+              const taskToComplete = zenTask
+              setZenTask(null)
+              void completeTask(taskToComplete)
+            }}
+          />
+        )}
 
-function Metric({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="metric">
-      <strong>{value}</strong>
-      <span>{label}</span>
-    </div>
+        {/* Global Quick Action Command Palette */}
+        {dashboard && (
+          <CommandPalette
+            visible={cmdPaletteVisible}
+            onClose={() => setCmdPaletteVisible(false)}
+            activeTasks={openTasks}
+            onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            onLaunchZen={(task) => setZenTask(task)}
+            onRefresh={() => void refresh()}
+          />
+        )}
+      </main>
+    </ConfigProvider>
   )
 }
